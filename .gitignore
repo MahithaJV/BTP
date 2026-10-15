@@ -1,0 +1,12 @@
+# Environment variables (DO NOT COMMIT SECRETS)
+.env
+
+# Python cache & virtual environments
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Downloaded FIR PDFs / temporary files
+firs_downloaded/
+firs/

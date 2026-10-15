@@ -1,0 +1,10 @@
+selenium
+langchain
+langchain-google-genai
+google-generativeai
+pypdf
+pdf2image
+pytesseract
+supabase
+requests
+python-dotenv
