@@ -31,20 +31,25 @@ def save_to_database(records, table_name="fir_records"):
             print(f"[Mock DB Insert] Saved {r.get('fir_number')} to DB.")
         return True
         
-    print(f"Attempting to save {len(records)} records to Supabase table '{table_name}'...")
+    print(f"Attempting to save {len(records)} records to Supabase table '{table_name}'...", flush=True)
     
     success_count = 0
     for record in records:
+        fir_no = record.get("fir_number")
         try:
-            # Flatten or format the record to match your Supabase schema
-            # Example: coordinates dict to lat/lng columns, lists to arrays, etc.
-            
-            # Simple insertion assuming JSON columns or matching schema
+            # Check for existing record to avoid duplicate entries across 3-hour cycles
+            if fir_no and fir_no != "Unknown":
+                existing = supabase.table(table_name).select("id").eq("fir_number", fir_no).execute()
+                if existing.data and len(existing.data) > 0:
+                    print(f"  [DB Exists] FIR #{fir_no} already stored in Supabase. Skipping duplicate.", flush=True)
+                    success_count += 1
+                    continue
+
             data, count = supabase.table(table_name).insert(record).execute()
-            print(f"Successfully inserted FIR: {record.get('fir_number')}")
+            print(f"  [DB OK] Inserted real FIR #{fir_no} into Supabase", flush=True)
             success_count += 1
         except Exception as e:
-            print(f"Error inserting record {record.get('fir_number')}: {e}")
+            print(f"  [DB Error] Inserting FIR #{fir_no}: {e}", flush=True)
             
-    print(f"Database insertion completed. {success_count}/{len(records)} successful.")
+    print(f"Database insertion completed. {success_count}/{len(records)} successful.", flush=True)
     return success_count == len(records)

@@ -1,67 +1,226 @@
-import time
 import os
+import time
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 
-def scrape_firs(download_dir="firs"):
-    """
-    Template for scraping FIR PDFs from Maharashtra Police Portal.
-    You will need to adjust the selectors based on the actual website structure.
-    """
-    print(f"Starting Selenium scraper. Downloads will be saved to {download_dir}")
-    
-    if not os.path.exists(download_dir):
-        os.makedirs(download_dir)
+# -- The 5 Target Cities in Maharashtra --
+# Strictly Pune, Mumbai Main, Thane, Nashik, and Nagpur. No other cities.
+TARGET_CITIES = [
+    {
+        "name": "Pune",
+        "official_unit": "PUNE CITY",
+        "district_code": "19393",
+    },
+    {
+        "name": "Mumbai Main",
+        "official_unit": "BRIHAN MUMBAI CITY",
+        "district_code": "19378",
+    },
+    {
+        "name": "Thane",
+        "official_unit": "THANE CITY",
+        "district_code": "19399",
+    },
+    {
+        "name": "Nashik",
+        "official_unit": "NASHIK CITY",
+        "district_code": "19408",
+    },
+    {
+        "name": "Nagpur",
+        "official_unit": "NAGPUR CITY",
+        "district_code": "19387",
+    },
+]
 
-    # Set up Chrome options to automatically download PDFs to the specified directory
-    chrome_options = webdriver.ChromeOptions()
+BASE_URL = "https://citizen.mahapolice.gov.in"
+INDEX_URL = f"{BASE_URL}/Citizen/MH/index.aspx"
+PUBLISHED_FIRS_URL = f"{BASE_URL}/Citizen/MH/PublishedFIRs.aspx"
+
+
+def init_chrome_driver(download_dir):
+    """Initialize a headless Chrome browser configured to automatically save PDFs."""
+    abs_download_dir = os.path.abspath(download_dir)
+    os.makedirs(abs_download_dir, exist_ok=True)
+
+    opts = webdriver.ChromeOptions()
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--window-size=1400,1000")
+    opts.add_argument("--headless=new")
+
     prefs = {
-        "download.default_directory": os.path.abspath(download_dir),
+        "download.default_directory": abs_download_dir,
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
-        "plugins.always_open_pdf_externally": True # Automatically download PDFs instead of opening in browser
+        "plugins.always_open_pdf_externally": True,
     }
-    chrome_options.add_experimental_option("prefs", prefs)
-    
-    # Initialize the driver
-    driver = webdriver.Chrome(options=chrome_options)
-    
-    try:
-        # Example URL - Replace with the actual Maharashtra Police FIR portal URL
-        url = "https://citizen.mahapolice.gov.in/Citizen/MH/PublishedFIRs.aspx"
-        print(f"Navigating to {url}")
-        driver.get(url)
-        
-        # Wait for the page to load (adjust as necessary)
-        time.sleep(3)
-        
-        # TODO: Implement the actual interaction logic here
-        # Example:
-        # 1. Select District, Police Station, Date ranges
-        # 2. Click Search
-        # 3. Iterate through results and click download links
-        # 
-        # For demonstration, we'll pretend we clicked a link and downloaded a file
-        print("[Mock] Selecting filters and searching for FIRs...")
+    opts.add_experimental_option("prefs", prefs)
+
+    driver = webdriver.Chrome(options=opts)
+    return driver
+
+
+def wait_for_new_pdf_download(download_dir, before_files, timeout=20):
+    """Wait until a new non-crdownload PDF file appears and finishes writing."""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        current_files = set(os.listdir(download_dir))
+        new_files = current_files - before_files
+        # Check if any new PDF exists and no .crdownload file is active
+        has_crdownload = any(f.endswith(".crdownload") for f in current_files)
+        new_pdfs = [f for f in new_files if f.lower().endswith(".pdf")]
+        if new_pdfs and not has_crdownload:
+            # Check file size is stable and > 0
+            latest = new_pdfs[0]
+            latest_path = os.path.join(download_dir, latest)
+            if os.path.exists(latest_path) and os.path.getsize(latest_path) > 1000:
+                return latest
         time.sleep(1)
-        print("[Mock] Found FIR records. Downloading PDFs...")
-        
-        # In a real scenario, you would find the download buttons and click them:
-        # download_buttons = driver.find_elements(By.CSS_SELECTOR, ".download-btn")
-        # for btn in download_buttons:
-        #     btn.click()
-        #     time.sleep(1) # wait for download to start
-            
-        print(f"Scraping completed. PDFs should be in '{download_dir}'.")
-        
+    return None
+
+
+def scrape_firs(download_dir="firs_downloaded"):
+    """
+    Scrapes real, official First Information Report (FIR) PDFs from the Maharashtra Police
+    Citizen Portal exclusively for the 5 target cities:
+    1. Pune (PUNE CITY - 19393)
+    2. Mumbai Main (BRIHAN MUMBAI CITY - 19378)
+    3. Thane (THANE CITY - 19399)
+    4. Nashik (NASHIK CITY - 19408)
+    5. Nagpur (NAGPUR CITY - 19387)
+
+    Search parameters:
+      - Date From: Today
+      - Date To: Today
+      - Unit: Selected city unit code
+      - Police Station: Blank (searches all stations in the unit)
+      - FIR Number: Blank
+    """
+    abs_download_dir = os.path.abspath(download_dir)
+    os.makedirs(abs_download_dir, exist_ok=True)
+
+    print("\n" + "=" * 70, flush=True)
+    print("  MAHARASHTRA POLICE FIR SCRAPER -- 5 TARGET CITIES (LIVE PORTAL)", flush=True)
+    print("=" * 70, flush=True)
+    for i, city in enumerate(TARGET_CITIES, 1):
+        print(f"  [{i}/5] {city['name'].upper()} ({city['official_unit']} - Code: {city['district_code']})", flush=True)
+    print("=" * 70, flush=True)
+
+    driver = None
+    downloaded_files = []
+
+    try:
+        print("\n[Portal] Launching headless browser...", flush=True)
+        driver = init_chrome_driver(abs_download_dir)
+        wait = WebDriverWait(driver, 20)
+
+        # Step 1: Establish session cookies by loading home page
+        print("[Portal] Navigating to index page to initialize session...", flush=True)
+        driver.get(INDEX_URL)
+        time.sleep(2)
+
+        today_str = datetime.now().strftime("%d/%m/%Y")
+        print(f"[Portal] Querying FIRs for Today: {today_str}\n", flush=True)
+
+        for idx, city in enumerate(TARGET_CITIES, 1):
+            cname = city["name"]
+            ccode = city["district_code"]
+            unit_name = city["official_unit"]
+
+            print(f"--- [{idx}/5] Querying City: {cname.upper()} ({unit_name}) ---", flush=True)
+
+            try:
+                # Navigate to the Published FIRs search page
+                driver.get(PUBLISHED_FIRS_URL)
+                time.sleep(2)
+
+                # Set Date From and Date To
+                from_input = wait.until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDateOfRegistrationFrom")))
+                to_input = wait.until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDateOfRegistrationTo")))
+                driver.execute_script("arguments[0].value = arguments[1];", from_input, today_str)
+                driver.execute_script("arguments[0].value = arguments[1];", to_input, today_str)
+
+                # Select the Unit from dropdown (Pune City, Brihan Mumbai City, Thane City, etc.)
+                unit_select = Select(driver.find_element(By.ID, "ContentPlaceHolder1_ddlDistrict"))
+                unit_select.select_by_value(ccode)
+                time.sleep(2)
+
+                # Re-verify dates are intact after ASP.NET postback
+                driver.execute_script("arguments[0].value = arguments[1];", driver.find_element(By.ID, "ContentPlaceHolder1_txtDateOfRegistrationFrom"), today_str)
+                driver.execute_script("arguments[0].value = arguments[1];", driver.find_element(By.ID, "ContentPlaceHolder1_txtDateOfRegistrationTo"), today_str)
+
+                # Leave Police Station blank and FIR Number blank
+                # Click the Search button
+                search_btn = wait.until(EC.element_to_be_clickable((By.ID, "ContentPlaceHolder1_btnSearch")))
+                search_btn.click()
+                time.sleep(4)
+
+                # Check total record count label
+                total_records = "0"
+                try:
+                    lbl = driver.find_element(By.ID, "ContentPlaceHolder1_lbltotalrecord")
+                    total_records = lbl.text.strip()
+                except Exception:
+                    pass
+
+                print(f"  [Portal Status] {cname}: Total FIR records found today: {total_records}", flush=True)
+
+                # Inspect results table
+                tables = driver.find_elements(By.ID, "ContentPlaceHolder1_gdvDeadBody")
+                if tables:
+                    rows = tables[0].find_elements(By.TAG_NAME, "tr")
+                    data_rows = rows[1:] if len(rows) > 1 else []
+                    print(f"  [Table Rows] Found {len(data_rows)} rows displayed for {cname}", flush=True)
+
+                    if data_rows:
+                        # Extract first FIR row details
+                        first_row = data_rows[0]
+                        cols = [c.text.strip().replace("\n", " ") for c in first_row.find_elements(By.TAG_NAME, "td")]
+                        fir_no = cols[5] if len(cols) > 5 else "N/A"
+                        ps_name = cols[3] if len(cols) > 3 else "N/A"
+                        clean_ps = ps_name.encode("ascii", "replace").decode("ascii")
+                        print(f"  [Selected FIR] Row 1 -> FIR #{fir_no} at Police Station: {clean_ps}", flush=True)
+
+                        # Click Download button to fetch real PDF
+                        download_btns = first_row.find_elements(By.CSS_SELECTOR, "input[value='Download']")
+                        if download_btns:
+                            before_files = set(os.listdir(abs_download_dir))
+                            download_btns[0].click()
+                            new_pdf = wait_for_new_pdf_download(abs_download_dir, before_files, timeout=15)
+                            if new_pdf:
+                                full_path = os.path.join(abs_download_dir, new_pdf)
+                                size_kb = os.path.getsize(full_path) // 1024
+                                print(f"  [Download Complete] Real PDF saved: {new_pdf} ({size_kb} KB)", flush=True)
+                                downloaded_files.append(full_path)
+                            else:
+                                print(f"  [Notice] Download initiated, checking existing directory files.", flush=True)
+                else:
+                    print(f"  [Portal Status] {cname}: No table displayed for today's date.", flush=True)
+
+            except Exception as city_err:
+                print(f"  [City Error] {cname}: Error querying portal: {city_err}", flush=True)
+
+            time.sleep(1)
+
     except Exception as e:
-        print(f"Error during scraping: {e}")
+        print(f"[Portal Error] Scraper encountered an exception: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
     finally:
-        driver.quit()
-        
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+    print(f"\n[Scraper Complete] Total real government FIR PDFs downloaded this cycle: {len(downloaded_files)}", flush=True)
     return download_dir
+
 
 if __name__ == "__main__":
     scrape_firs()
