@@ -37,11 +37,15 @@ def run_pipeline():
     # ── Step 1: Scraping Portal for the 5 Cities ─────────────────────
     print("\n[STEP 1/4] Scraping FIRs for the 5 Target Cities...", flush=True)
     download_dir = "firs_downloaded"
-    download_dir = scrape_firs(download_dir)
+    scraper_res = scrape_firs(download_dir)
+    if isinstance(scraper_res, tuple):
+        download_dir, new_files = scraper_res
+    else:
+        download_dir, new_files = scraper_res, None
 
     # ── Step 2: Gemini LLM Structured Data Extraction ────────────────
     print("\n[STEP 2/4] Extracting Structured FIR Data with Google Gemini LLM...", flush=True)
-    structured_records = process_pdfs(download_dir)
+    structured_records = process_pdfs(download_dir, target_files=new_files)
 
     if not structured_records:
         print("  [Warning] No records extracted. Continuing to next cycle.", flush=True)

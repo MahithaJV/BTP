@@ -62,6 +62,18 @@ def init_chrome_driver(download_dir):
     opts.add_experimental_option("prefs", prefs)
 
     driver = webdriver.Chrome(options=opts)
+    # Enable file downloads in headless Chrome via Chrome DevTools Protocol
+    try:
+        driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+            "behavior": "allow",
+            "downloadPath": abs_download_dir
+        })
+        driver.execute_cdp_cmd("Browser.setDownloadBehavior", {
+            "behavior": "allow",
+            "downloadPath": abs_download_dir
+        })
+    except Exception:
+        pass
     return driver
 
 
@@ -124,8 +136,9 @@ def scrape_firs(download_dir="firs_downloaded"):
         driver.get(INDEX_URL)
         time.sleep(2)
 
-        today_str = datetime.now().strftime("%d/%m/%Y")
-        print(f"[Portal] Querying FIRs for Today: {today_str}\n", flush=True)
+        today = datetime.now()
+        today_str = today.strftime("%d/%m/%Y")
+        print(f"[Portal] Querying FIRs exclusively for TODAY: {today_str}\n", flush=True)
 
         for idx, city in enumerate(TARGET_CITIES, 1):
             cname = city["name"]
@@ -139,7 +152,7 @@ def scrape_firs(download_dir="firs_downloaded"):
                 driver.get(PUBLISHED_FIRS_URL)
                 time.sleep(2)
 
-                # Set Date From and Date To
+                # Set Date From and Date To strictly to today
                 from_input = wait.until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDateOfRegistrationFrom")))
                 to_input = wait.until(EC.presence_of_element_located((By.ID, "ContentPlaceHolder1_txtDateOfRegistrationTo")))
                 driver.execute_script("arguments[0].value = arguments[1];", from_input, today_str)
@@ -178,20 +191,43 @@ def scrape_firs(download_dir="firs_downloaded"):
                     print(f"  [Table Rows] Found {len(data_rows)} rows displayed for {cname}", flush=True)
 
                     if data_rows:
-                        # Extract first FIR row details
-                        first_row = data_rows[0]
-                        cols = [c.text.strip().replace("\n", " ") for c in first_row.find_elements(By.TAG_NAME, "td")]
-                        fir_no = cols[5] if len(cols) > 5 else "N/A"
-                        ps_name = cols[3] if len(cols) > 3 else "N/A"
-                        clean_ps = ps_name.encode("ascii", "replace").decode("ascii")
-                        print(f"  [Selected FIR] Row 1 -> FIR #{fir_no} at Police Station: {clean_ps}", flush=True)
+                        # Find the first row that hasn't been downloaded yet
+                        selected_row = None
+                        selected_fir = None
+                        selected_ps = None
+                        selected_reg_time = None
+
+                        existing_local_names = set(os.listdir(abs_download_dir))
+                        for row in data_rows:
+                            cols = [c.text.strip().replace("\n", " ") for c in row.find_elements(By.TAG_NAME, "td")]
+                            cand_fir = cols[5] if len(cols) > 5 else ""
+                            # Check if this FIR has already been downloaded
+                            already_downloaded = any(cand_fir and cand_fir in fname for fname in existing_local_names)
+                            if not already_downloaded:
+                                selected_row = row
+                                selected_fir = cand_fir
+                                selected_ps = cols[3] if len(cols) > 3 else "N/A"
+                                selected_reg_time = cols[6] if len(cols) > 6 else ""
+                                break
+
+                        # Fallback to row 0 if all were seen
+                        if not selected_row:
+                            selected_row = data_rows[0]
+                            cols = [c.text.strip().replace("\n", " ") for c in selected_row.find_elements(By.TAG_NAME, "td")]
+                            selected_fir = cols[5] if len(cols) > 5 else "N/A"
+                            selected_ps = cols[3] if len(cols) > 3 else "N/A"
+                            selected_reg_time = cols[6] if len(cols) > 6 else ""
+
+                        clean_ps = selected_ps.encode("ascii", "replace").decode("ascii")
+                        print(f"  [Selected FIR] FIR #{selected_fir} at Police Station: {clean_ps} (Registered: {selected_reg_time})", flush=True)
 
                         # Click Download button to fetch real PDF
-                        download_btns = first_row.find_elements(By.CSS_SELECTOR, "input[value='Download']")
+                        download_btns = selected_row.find_elements(By.CSS_SELECTOR, "input[value='Download']")
                         if download_btns:
                             before_files = set(os.listdir(abs_download_dir))
-                            download_btns[0].click()
-                            new_pdf = wait_for_new_pdf_download(abs_download_dir, before_files, timeout=15)
+                            # Trigger click via JS for reliable headless download
+                            driver.execute_script("arguments[0].click();", download_btns[0])
+                            new_pdf = wait_for_new_pdf_download(abs_download_dir, before_files, timeout=25)
                             if new_pdf:
                                 full_path = os.path.join(abs_download_dir, new_pdf)
                                 size_kb = os.path.getsize(full_path) // 1024
@@ -219,7 +255,7 @@ def scrape_firs(download_dir="firs_downloaded"):
                 pass
 
     print(f"\n[Scraper Complete] Total real government FIR PDFs downloaded this cycle: {len(downloaded_files)}", flush=True)
-    return download_dir
+    return download_dir, downloaded_files
 
 
 if __name__ == "__main__":

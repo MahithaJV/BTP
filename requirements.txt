@@ -8,3 +8,5 @@ pytesseract
 supabase
 requests
 python-dotenv
+fastapi
+uvicorn

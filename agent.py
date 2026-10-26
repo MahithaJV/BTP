@@ -330,46 +330,100 @@ def classify_crime(description):
         print(f"  Classification notice ({e}), applying intelligent keyword fallback...", flush=True)
         return _keyword_classify_fallback(description)
 
+# Guaranteed city and area centroids for the 5 target cities + key sub-localities
+CITY_CENTROIDS = {
+    "pune": {"lat": 18.5204, "lng": 73.8567},
+    "mumbai": {"lat": 19.0760, "lng": 72.8777},
+    "thane": {"lat": 19.2183, "lng": 72.9781},
+    "nashik": {"lat": 19.9975, "lng": 73.7898},
+    "nagpur": {"lat": 21.1458, "lng": 79.0882},
+    "kalyan": {"lat": 19.2403, "lng": 73.1305},
+    "bhiwandi": {"lat": 19.2813, "lng": 73.0483},
+    "dadar": {"lat": 19.0178, "lng": 72.8478},
+    "andheri": {"lat": 19.1136, "lng": 72.8697},
+    "bhandup": {"lat": 19.1439, "lng": 72.9372},
+    "sitabuldi": {"lat": 21.1466, "lng": 79.0806},
+    "vadgaonsheri": {"lat": 18.5538, "lng": 73.9142},
+    "lohiyanagar": {"lat": 18.5089, "lng": 73.8711},
+    "shivajinagar": {"lat": 18.5314, "lng": 73.8446},
+    "panchavati": {"lat": 20.0065, "lng": 73.7831},
+    "beltarodi": {"lat": 21.0850, "lng": 79.0820},
+}
+
+
+def _city_centroid_fallback(location_name):
+    """
+    Guaranteed fallback to city or sub-area centroid with small deterministic jitter
+    so heat points do not collapse to an identical single point.
+    """
+    import hashlib
+    loc_lower = str(location_name or "").lower()
+
+    # Check specific areas first, then main cities
+    for place, coords in CITY_CENTROIDS.items():
+        if place in loc_lower:
+            h = int(hashlib.md5(str(location_name).encode("utf-8")).hexdigest(), 16)
+            jitter_lat = ((h % 1000) / 1000.0 - 0.5) * 0.015
+            jitter_lng = (((h // 1000) % 1000) / 1000.0 - 0.5) * 0.015
+            return {
+                "lat": round(coords["lat"] + jitter_lat, 6),
+                "lng": round(coords["lng"] + jitter_lng, 6),
+            }
+
+    # Default Maharashtra center fallback
+    return {"lat": 19.7515, "lng": 75.7139}
+
+
 def geocode_location(location_name):
     """
-    Agentic task 2: Geocoding the location using OpenStreetMap Nominatim (free).
-    Falls back gracefully to area and city level if the exact street is not found.
+    Agentic task 2: Geocoding the location using OpenStreetMap Nominatim.
+    Falls back gracefully to city-level and guaranteed centroids so coordinates are NEVER None.
     """
     import urllib.parse
     import time
-    
+
+    if not location_name or not str(location_name).strip():
+        return {"lat": 19.7515, "lng": 75.7139}
+
     # Generate progressive candidate queries
     candidates = [
         f"{location_name}, Maharashtra, India",
         location_name,
     ]
-    
+
     # Try comma-separated sub-parts (e.g. 'Lohiyanagar, Pune' or 'Kalyan West, Thane')
     parts = [p.strip() for p in location_name.split(",") if p.strip()]
     if len(parts) > 1:
         candidates.append(", ".join(parts[1:]) + ", Maharashtra, India")
         candidates.append(parts[-1] + ", Maharashtra, India")
-        
+
     # Check for target cities
     for city in ["Pune", "Mumbai", "Thane", "Nashik", "Nagpur"]:
         if city.lower() in location_name.lower():
             candidates.append(f"{city}, Maharashtra, India")
             break
-            
+
     for candidate in candidates:
         try:
             query = urllib.parse.quote(candidate)
             url = f"https://nominatim.openstreetmap.org/search?q={query}&format=json&limit=1"
-            response = requests.get(url, headers={"User-Agent": "BTP-FIR-Pipeline/1.0"}, timeout=10)
-            data = response.json()
-            if data:
-                return {"lat": float(data[0]["lat"]), "lng": float(data[0]["lon"])}
-            time.sleep(0.5)
+            response = requests.get(
+                url,
+                headers={"User-Agent": "BTP-FIR-Pipeline/1.0 (CrimeWatch-Maharashtra)"},
+                timeout=6,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data and len(data) > 0:
+                    return {"lat": float(data[0]["lat"]), "lng": float(data[0]["lon"])}
+            time.sleep(0.4)
         except Exception:
             continue
-            
-    print(f"Geocoding: could not resolve coordinates for '{location_name}'", flush=True)
-    return None
+
+    # Guaranteed fallback: resolve to city/region centroid
+    fallback_coords = _city_centroid_fallback(location_name)
+    print(f"  [Geocoding Fallback] Using regional centroid for '{location_name}': {fallback_coords}", flush=True)
+    return fallback_coords
 
 def process_agentic_layer(records):
     """
